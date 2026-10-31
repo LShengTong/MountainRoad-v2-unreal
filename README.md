@@ -2,29 +2,86 @@
 
 基于 Unreal Engine 5.8 的场景工程，包含 PCG、Houdini 数字资产（HDA）、材质与纹理资源。默认场景为 `Content/Map.umap`。
 
+## 通过 HDA Asset 导入路面 Mesh 和地形
+
+项目的路面几何与地形通过 Houdini Engine 的 HDA Asset 工作流进入 UE。HDA 资产入口为 `Content/HDAs/mount_road-1_0.uasset`；项目还提供了编辑器工具蓝图 `Content/EUW_ImportHDA.uasset`，用于搭建输出选择和生成、Bake 操作。工具界面的最终连接与运行结果以当前蓝图为准。
+
+### 导入资产与选择输出
+
+1. 在 Houdini 中保存 HDA 定义到 `.hda` 文件。仅保存 `.hip` 场景文件不等于更新 HDA 定义。
+2. 首次使用时，将 `.hda` 导入 UE 内容浏览器；本项目已有导入后的 `mount_road-1_0` 资产。
+3. 将该资产拖入关卡创建 Houdini Asset Actor，或在 EUW 中通过 `ProcessHDA` 创建实例。根据 HDA 的实际输入要求设置输入。
+4. 在实例参数面板或工具复选框中选择输出，再执行 Cook。
+
+四个选项分别控制以下输出，可根据需要组合开启：
+
+| 选项 | HDA 内部参数 | 功能描述 |
+| --- | --- | --- |
+| 输出路面网格（Output Mesh） | `output_mesh` | 输出山路的路面 Mesh 几何，用于构成 UE 场景中可见的道路实体。需要生成或更新路面模型时开启。 |
+| 输出地形（Output Terrain） | `output_terrain` | 输出地形数据，在 UE 中生成 Landscape，作为道路及周边环境的地形基础。需要生成或更新地形时开启。 |
+| 输出建筑点（Output Building Pts） | `output_building_pts` | 输出建筑布置点，提供建筑位置数据。PCG 主图通过 Houdini Asset 获取这些点，并将其用于树木点与岩石点的分布计算；该选项输出的是点数据。 |
+| 输出道路表面数据（Output Road Surface） | `output_road_surface` | 输出道路表面相关数据，供后续道路区域处理使用。PCG 主图中的道路 Surface 采样由山路 Spline 生成，并与建筑点共同参与环境点分布计算；该选项与路面 Mesh 输出独立。 |
+
+只更新路面时开启 `output_mesh`；只更新地形时开启 `output_terrain`；需要两者时同时开启。其他两项按后续 PCG 的数据需求选择。修改现有实例参数会影响其当前输出，执行前应确认要保留的输出项。
+
 ## 具体功能与资源入口
 
 以下说明结合资源文件、PCG 资产中可读取的节点类型和引用整理。节点存在不代表所有分支都在当前场景中执行；参数数值、连线和最终效果仍以编辑器为准。
 
 ### 1. 山路程序化生成与总流程
 
-核心入口为 `Content/PCG/PCG_MountRoad.uasset`，图中包含 Houdini PCG 节点，并引用道路表面、岩石、树木三个子图。还能识别到属性转换、属性排序、字符串处理、数据合并和静态网格生成节点，说明主图承担生成数据整理及子流程组织的职责。
+主图入口为 `Content/PCG/PCG_MountRoad.uasset`。主图通过 Houdini Asset 获取建筑点，同时通过山路 Spline 构建山路 Surface 并生成表面采样点，再利用山路 Surface 数据和建筑点生成树木点；岩石点生成同时使用山路 Surface 数据、建筑点和树木点。
 
-Houdini 数字资产位于 `Content/HDAs/mount_road-1_0.uasset`。工程保存了多组 `main_geo` 和 `collision_geo` 输出，以及对应的 Bake 资源，可确认已有几何与碰撞几何的生成产物。
+```mermaid
+flowchart TD
+    A[Houdini Asset] --> B[建筑点]
+    C[山路 Spline] --> D[山路 Surface 与表面采样点]
+    B --> E[树木点生成]
+    D --> E
+    E --> F[岩石点生成]
+    B --> F
+    D --> F
+```
 
-注意：主图中还可读到 `/Game/HDAs/mount_road` 引用，与当前磁盘上的 `mount_road-1_0` 名称不同。是否通过重定向或其他绑定解析，需要在编辑器中检查；不要仅凭文件名改动引用。
+建筑点提供建筑位置数据，山路 Surface 及其采样点提供道路区域数据，两者先参与树木点生成；岩石点生成还需要使用树木点，因此应在树木点生成后执行。树木与岩石的具体筛选、距离计算和分布设置，分别在对应子图中调整。
 
-### 2. 基于样条的道路表面采样
+主图中的 Houdini Asset 用于取得建筑点；通过 HDA 导入路面 Mesh 和 Landscape 的流程另见“通过 HDA Asset 导入路面 Mesh 和地形”章节。
+
+### 2. 基于山路 Spline 的 Surface 采样
 
 入口：`Content/PCG/PCG_RoadSurface.uasset`。
 
-图中包含获取样条（Get Spline Data）、从样条创建表面（Create Surface From Spline）、表面采样（Surface Sampler）、差集（Difference）和数据类型过滤节点。这些节点为道路相关区域提供表面和采样点数据，并支持区域差集处理。
+该子图获取山路 Spline，构建山路 Surface，并对 Surface 进行采样，生成道路表面采样点。其结果与 Houdini Asset 输出的建筑点一起，参与后续树木点与岩石点的生成。
 
-修改时重点查看样条来源、表面创建方式、采样密度和差集输入。当前静态检查不能确定具体选中了哪些场景 Actor，也不能确认各样条必须采用的闭合方式。
+修改道路形状后，需要更新这一路 Surface 和采样结果，再更新树木、岩石分布。调整时重点检查 Spline 来源、Surface 范围、采样设置及下游连接。
 
-### 3. 岩石程序化布置
+### 3. 可复用距离过滤
 
-入口：`Content/PCG/PCG_Rocks.uasset`。
+入口：`Content/PCG/PCG_DistanceFilter.uasset`。树木与岩石子图共用这段距离过滤逻辑，用于实现距离道路越近、分布越稀疏的效果。
+
+子图接收 `MinDistance` 和 `MaxDistance`，根据点到道路的距离计算保留概率，再按概率筛选点：
+
+| 距离范围 | 保留规则 |
+| --- | --- |
+| 小于 `MinDistance` | 直接删除，保留概率为 0 |
+| `MinDistance` 到 `MaxDistance` 之间 | 保留概率在 0 与 1 之间插值，随距离增加而提高 |
+| 大于 `MaxDistance` | 保留概率为 1 |
+
+因此，道路附近先形成无点区域，随后逐渐过渡到稀疏分布，远处则不再因这项距离过滤损失点。保留概率为 1 只表示通过当前距离过滤，后续节点仍可能继续筛选这些点。
+
+调整 `MinDistance` 可以改变道路附近完全排除点的范围；调整 `MaxDistance` 可以改变从稀疏分布过渡到完整保留的距离范围。配置时应保证 `MaxDistance` 大于 `MinDistance`。
+
+### 4. 树木程序化布置
+
+入口：`Content/PCG/PCG_Tree.uasset`。该子图利用山路 Surface 数据和建筑点生成树木点，再通过静态网格生成节点布置树木实例。
+
+图中同样包含地形读取、表面采样、距离计算、密度过滤、点变换、自修剪及静态网格生成节点，并引用 `PCG_DistanceFilter`。这为按地形与距离条件筛选树木候选点、控制分布以及放置实例提供了基础。
+
+树木与岩石拆分为独立子图，便于分别检查模型、采样密度、实例变换和分布范围。是否实现道路避让，以及避让对象与宽度，应检查 Distance 和 Difference 的实际输入。
+
+### 5. 岩石程序化布置
+
+入口：`Content/PCG/PCG_Rocks.uasset`。该子图利用山路 Surface 数据、建筑点和树木点生成岩石点，再通过静态网格生成节点布置岩石实例。树木点是岩石生成的上游输入，调整树木分布后也需要更新岩石分布。
 
 已识别的处理能力包括：
 
@@ -35,84 +92,28 @@ Houdini 数字资产位于 `Content/HDAs/mount_road-1_0.uasset`。工程保存�
 
 调整岩石效果时，应检查生成器所用网格、采样设置、距离范围、点变换及修剪规则。节点的实际连接顺序与随机参数需要在图内确认。
 
-### 4. 树木程序化布置
-
-入口：`Content/PCG/PCG_Tree.uasset`。
-
-图中同样包含地形读取、表面采样、距离计算、密度过滤、点变换、自修剪及静态网格生成节点，并引用 `PCG_DIstanceFilter`。这为按地形与距离条件筛选树木候选点、控制分布以及放置实例提供了基础。
-
-树木与岩石拆分为独立子图，便于分别检查模型、采样密度、实例变换和分布范围。是否实现道路避让，以及避让对象与宽度，应检查 Distance 和 Difference 的实际输入。
-
-### 5. 可复用距离过滤
-
-入口：`Content/PCG/PCG_DIstanceFilter.uasset`，注意文件名中 `DIstance` 的大小写。
-
-资产中可识别到 `MinDistance`、`MaxDistance`、`DistanceRatio` 等字段，以及用户参数读取、属性数学运算、属性过滤与属性噪声节点。树木与岩石图均引用该资产，因此它是两者共用的距离筛选逻辑入口。
-
-若需要改变近处与远处的分布关系，优先检查此图及调用位置的参数覆盖。本文不提供未经确认的默认距离、单位或计算公式。
-
 ### 6. 道路与地形材质
 
-| 资源 | 用途与检查入口 |
-| --- | --- |
-| `Materials/M_Road0`、`Materials/M_Road1` | 两份道路材质资源；具体差异需查看材质图 |
-| `Materials/M_RoadEdge` | 道路边缘材质入口 |
-| `Materials/M_RoadLine` | 道路线条材质入口 |
-| `Materials/M_Lanscape`、根目录 `M_Lanscape` | 两份不同路径的地形材质资源，实际使用者需检查引用 |
-| `Textures/Road/` | 两组沥青纹理及对应法线、粗糙度贴图 |
-| `Textures/Edge/` | 路侧泥土纹理及对应法线、粗糙度贴图 |
-| `Textures/road_white_line_2way_alpha` | 道路白线纹理资源 |
-| `Textures/Sand/`、`Textures/Gravel/`、`Textures/Pebble/` | 沙地、碎石、卵石的基础颜色、法线和粗糙度贴图 |
+以下路径相对于 `Content/`，名称及对应关系已按当前资源文件和材质资产中的引用重新核对。
 
-工程还包含 `RVT_Road` 与 `RVT_LandscapeHeight` 两份运行时虚拟纹理相关资源。从命名看分别面向道路和地形高度；写入与采样关系、道路地形融合方式尚未确认，不能仅凭资源名称认定已经完成融合效果。
+| 材质资源 | 对应纹理 / 资源 | 用途 |
+| --- | --- | --- |
+| `Materials/M_Road_01` | `Textures/Road/T_Asphalt_01_BaseColor`、`T_Asphalt_01_Normal`、`T_Asphalt_01_Roughness` | 第一组沥青路面材质 |
+| `Materials/M_Road_02` | `Textures/Road/T_Asphalt_02_BaseColor`、`T_Asphalt_02_Normal`、`T_Asphalt_02_Roughness` | 第二组沥青路面材质 |
+| `Materials/M_RoadEdge` | `Textures/Edge/T_RoadsideDirt_01_BaseColor`、`T_RoadsideDirt_01_Normal`、`T_RoadsideDirt_01_Roughness` | 道路边缘泥土材质 |
+| `Materials/M_RoadLine` | `Textures/T_RoadWhiteLine_TwoWay_Alpha` | 道路白线材质 |
+| `Materials/M_Landscape` | `Textures/Sand/T_Sand_*`、`Textures/Gravel/T_Gravel_*`，以及 `RVT_Road` | 地形材质，包含沙地、碎石纹理和道路 RVT 引用 |
 
-### 7. Houdini 输出与烘焙资源
+同一行省略目录的纹理名称均位于该行首个纹理的目录中。上述纹理组的通道后缀统一为 `BaseColor`、`Normal`、`Roughness`，分别表示基础颜色、法线和粗糙度。
 
-- `Content/HoudiniEngine/Temp/` 保存多批 Houdini 生成资源。
-- `Content/HoudiniEngine/Bake/` 保存烘焙后的几何、碰撞及部分材质资源。
-- 重新生成 HDA 后，应核对道路外形、材质槽和碰撞结果，再决定是否更新烘焙产物。
-- 不要把 `Content/HoudiniEngine/Temp` 当成普通工程缓存直接删除：场景或其他资产可能仍在引用其中的资源。
+另外，`Textures/Edge/T_RoadsideDirt_02_*` 和 `Textures/Pebble/T_Pebble_*` 仍保存在工程中，但本次读取的上述五份材质引用中未发现它们；这不代表它们在整个工程中都未使用。
 
-### 8. 房屋相关资源的当前状态
-
-工程同时存在 `Content/PCG/PCG_House.uasset` 和 `Content/PCG_House.uasset`。其中前者可读取到对 `PCG_MountRoad` 的引用。目前证据不足以确认它实现了独立的房屋生成流程，需在编辑器检查资源类型和内容后再作功能承诺。
-
-## 建议的编辑与验证流程
-
-1. 打开 `Map`，确认地形、道路及已有生成物正常加载。
-2. 在场景中找到实际使用的 PCG 组件，确认其 Graph 指向；从 `PCG_MountRoad` 查看主流程。
-3. 检查 Houdini 节点绑定的 HDA 与输入，确认引用能够解析。
-4. 修改道路输入后，先检查道路输出，再检查道路表面采样及树木、岩石子图。
-5. 分别检查树木与岩石的网格选择、密度、距离条件及点变换，逐项调整并观察生成结果。
-6. 检查道路材质、边缘和白线；如涉及 RVT，核对场景中的写入者与材质采样关系。
-7. 需要固定生成结果时，检查或更新 Bake 资源；保存地图及相应的外部 Actor 数据。
-
-建议验证道路连续性、道路与地形的高度关系、实例是否穿插路面、碰撞是否符合预期，以及远处实例的显示与性能。上述项目是验收建议，并非已经完成的测试结果。
-
-## 当前功能边界
-
-现有 C++ 主模块主要提供工程模块入口，程序化场景逻辑集中在资产中。本次检查未确认车辆驾驶、任务系统、交互界面、联网或运行时动态生成等玩法功能，也未执行编辑器运行与打包测试。不要将默认输入配置中的设备条目视为已经实现对应玩法或平台支持。
+当前保留的运行时虚拟纹理资源是 `Content/RVT_Road.uasset`，并被 `M_Landscape` 引用。旧的 `M_Lanscape` 与 `RVT_LandscapeHeight` 重定向已清理，不再作为独立资源列出。RVT 的具体写入、采样连线及最终融合效果仍以材质图和场景设置为准。
 
 ## 环境要求
 
 - Unreal Engine **5.8**（以 `MountainRoad.uproject` 的引擎关联为准）。
-- 编译 C++ 模块时，需要与该引擎版本匹配的 Visual Studio C++ 工具链及 Windows SDK。
-- 当前 Windows 渲染配置使用 **DirectX 12 / Shader Model 6**，面向桌面高画质环境。
 - 工程内附 Houdini Engine 插件，版本标识为 **3.0 - H22.0.368**；需要编辑或重新生成 HDA 时，请准备匹配的 Houdini 环境及适用许可。
-
-## 打开项目
-
-1. 安装并配置 Unreal Engine 5.8。
-2. 打开 `MountainRoad.uproject`。如提示模块缺失或版本不匹配，先生成项目文件，再编译编辑器目标。
-3. 等待首次资源处理和着色器编译完成。
-4. 编辑器默认打开 `/Game/Map`；也可以在内容浏览器中手动打开 `Content/Map.umap`。
-
-### 编译 C++ 模块
-
-1. 右键 `MountainRoad.uproject`，生成 Visual Studio 项目文件。
-2. 打开生成的 `MountainRoad.sln`。
-3. 选择 `Development Editor` 和 `Win64`，构建 `MountainRoad` 项目（编辑器目标为 `MountainRoadEditor`）。
-4. 构建完成后重新打开工程。
 
 ## 目录结构
 
@@ -136,18 +137,3 @@ MountainRoad/
     ├── MountainRoad.Target.cs
     └── MountainRoadEditor.Target.cs
 ```
-
-## 插件与渲染配置
-
-工程显式启用了 `ModelingToolsEditorMode`（仅编辑器）和 `PCGGeometryScriptInterop`。项目内的 Houdini Engine 插件配置为默认启用。
-
-当前渲染配置包括 Lumen 动态全局光照与反射、虚拟阴影贴图、网格距离场、光线追踪及 Substrate；静态光照已禁用。相关设置位于 `Config/DefaultEngine.ini`，可通过编辑器的项目设置调整。
-
-## 协作与资源维护
-
-- 保留 `Content`、`Config`、`Source`、所需插件及 `.uproject` 文件。
-- 移动或重命名 Unreal 资源时，优先在编辑器的内容浏览器中操作，避免破坏资源引用。
-- 地图的外部 Actor 和对象数据需要随地图一起同步。
-- `Intermediate`、`DerivedDataCache`、`Saved` 和 `.vs` 属于本机生成或缓存数据；`Saved` 也可能包含自动保存和备份，清理前应检查。
-- 本文依据工程文件和配置整理；尚未验证编辑器启动、运行或打包结果。
-
